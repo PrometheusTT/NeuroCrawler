@@ -1,0 +1,72 @@
+sources:
+  nature:
+    enabled: true
+    journals:
+      nature:
+        enabled: true
+      nature-neuroscience:
+        enabled: true
+      nature-methods:
+        enabled: true
+      nature-communications:
+        enabled: true
+      scientific-reports:
+        enabled: true
+      nature-machine-intelligence:
+        enabled: true
+      nature-biotechnology:
+        enabled: true
+
+  science:
+    enabled: true
+    journals:
+      science:
+        enabled: true
+      science-advances:
+        enabled: true
+      science-translational-medicine:
+        enabled: true
+      science-signaling:
+        enabled: true
+      science-immunology:
+        enabled: true
+      science-robotics:
+        enabled: true
+
+  cell:
+    enabled: true
+    journals:
+      cell:
+        enabled: true
+      neuron:
+        enabled: true
+      cell-reports:
+        enabled: true
+      current-biology:
+        enabled: true
+      cell-systems:
+        enabled: true
+      patterns:
+        enabled: true
+      cell-metabolism:
+        enabled: true
+  arxiv:
+    enabled: true
+    journals:
+      arxiv:
+        enabled: true
+
+database:
+  type: sqlite
+  path: neurocrawler.db
+  backup_interval: 86400
+
+scheduler:
+  enabled: true
+  interval: 86400
+  start_time: "01:00"
+  timezone: UTC
+
+proxy:
+  enabled: false
+  update_interval: 3600
