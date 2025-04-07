@@ -1,4 +1,9 @@
 /collectors/__pycache__
+/__pycache__
 /database/__pycache__
 /utils/__pycache__
-/__pycache__
+*.db
+*.backup
+/.idea
+/.idea
+/.idea
