@@ -1,173 +1,171 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import logging
 import re
-import string
+import logging
+import nltk
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
 from collections import Counter
+import string
 
 logger = logging.getLogger(__name__)
 
+# 尝试下载NLTK数据，如果已下载则跳过
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
 
-class NLPTools:
-    """
-    自然语言处理工具，用于文本分析、关键词提取等
-    """
-
-    def __init__(self):
-        # 神经科学领域常见术语
-        self.neuroscience_terms = [
-            "neuroscience", "neural", "brain", "neuron", "cortex",
-            "cognition", "cognitive", "eeg", "fmri", "meg", "spike",
-            "action potential", "neuroimaging", "connectome", "synaptic",
-            "axon", "dendrite", "hippocampus", "amygdala", "prefrontal",
-            "thalamus", "basal ganglia", "cerebellum", "brain-computer interface",
-            "neural network", "deep learning", "computational neuroscience",
-            "electrophysiology", "optogenetics", "calcium imaging",
-            "patch clamp", "transcriptomics", "spike sorting", "neurotransmitter"
-        ]
-
-        # 常见停用词
-        self.stopwords = set([
-            "a", "an", "the", "and", "or", "but", "if", "because", "as", "what",
-            "which", "this", "that", "these", "those", "then", "just", "so", "than",
-            "such", "both", "through", "about", "for", "is", "of", "while", "during",
-            "to", "from", "in", "on", "by", "with", "at", "into", "only", "few",
-            "some", "many", "most", "other", "such", "no", "nor", "not", "can", "will",
-            "don't", "doesn't", "didn't", "won't", "wouldn't", "shouldn't", "couldn't"
-        ])
-
-    def is_neuroscience_related(self, text):
-        """
-        判断文本是否与神经科学相关
-        基于关键词匹配和内容分析
-        """
-        if not text:
-            return False
-
-        # 转为小写进行匹配
-        text_lower = text.lower()
-
-        # 检查是否包含神经科学术语
-        for term in self.neuroscience_terms:
-            if term.lower() in text_lower:
-                return True
-
-        # 进一步分析文本内容
-        # 提取关键词并计算相关性分数
-        keywords = self.extract_keywords(text, n=20)
-
-        # 计算相关性分数
-        score = sum(1 for word in keywords if any(
-            term.lower() in word.lower() or word.lower() in term.lower()
-            for term in self.neuroscience_terms
-        ))
-
-        # 如果相关性分数超过阈值，判断为相关
-        return score >= 3
-
-    def extract_keywords(self, text, n=10):
-        """
-        从文本中提取关键词
-        使用TF-IDF思想的简化版本
-        """
-        if not text:
-            return []
-
-        # 文本预处理
-        text = text.lower()
-
-        # 移除标点符号
-        text = text.translate(str.maketrans('', '', string.punctuation))
-
-        # 分词
-        words = text.split()
-
-        # 移除停用词
-        words = [word for word in words if word not in self.stopwords]
-
-        # 计算词频
-        word_counts = Counter(words)
-
-        # 过滤掉单个字符和纯数字
-        word_counts = {k: v for k, v in word_counts.items()
-                       if len(k) > 1 and not k.isdigit()}
-
-        # 获取前n个关键词
-        keywords = [word for word, _ in word_counts.most_common(n)]
-
-        return keywords
-
-    def extract_github_links(self, text):
-        """从文本中提取GitHub仓库链接"""
-        if not text:
-            return []
-
-        # 匹配GitHub链接
-        github_pattern = r'https?://github\.com/([a-zA-Z0-9-]+)/([a-zA-Z0-9_.-]+)'
-        matches = re.findall(github_pattern, text)
-
-        return [{'user': match[0], 'repo': match[1]} for match in matches]
-
-    def extract_dataset_links(self, text):
-        """从文本中提取数据集链接"""
-        if not text:
-            return []
-
-        # 常见数据集托管平台
-        platforms = [
-            {'name': 'figshare', 'pattern': r'https?://(?:www\.)?figshare\.com/[^\s]+'},
-            {'name': 'zenodo', 'pattern': r'https?://(?:www\.)?zenodo\.org/[^\s]+'},
-            {'name': 'dataverse', 'pattern': r'https?://(?:www\.)?dataverse\.harvard\.edu/[^\s]+'},
-            {'name': 'dryad', 'pattern': r'https?://(?:www\.)?datadryad\.org/[^\s]+'},
-            {'name': 'osf', 'pattern': r'https?://(?:www\.)?osf\.io/[^\s]+'},
-            {'name': 'kaggle', 'pattern': r'https?://(?:www\.)?kaggle\.com/datasets/[^\s]+'},
-            {'name': 'openneuro', 'pattern': r'https?://(?:www\.)?openneuro\.org/[^\s]+'},
-            {'name': 'neurodata', 'pattern': r'https?://(?:www\.)?neurodata\.io/[^\s]+'},
-            {'name': 'crcns', 'pattern': r'https?://(?:www\.)?crcns\.org/[^\s]+'},
-            {'name': 'gin', 'pattern': r'https?://(?:www\.)?gin\.g-node\.org/[^\s]+'}
-        ]
-
-        results = []
-
-        # 查找每个平台的链接
-        for platform in platforms:
-            matches = re.findall(platform['pattern'], text)
-            for url in matches:
-                results.append({
-                    'platform': platform['name'],
-                    'url': url
-                })
-
-        # 查找DOI链接
-        doi_pattern = r'https?://(?:www\.)?doi\.org/([^\s]+)'
-        doi_matches = re.findall(doi_pattern, text)
-        for doi in doi_matches:
-            results.append({
-                'platform': 'doi',
-                'url': f'https://doi.org/{doi}',
-                'doi': doi
-            })
-
-        return results
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
 
 
-# 初始化单例实例供外部使用
-nlp = NLPTools()
-
-
-# 导出简化函数
 def is_neuroscience_related(text):
-    return nlp.is_neuroscience_related(text)
+    """
+    判断文本是否与神经科学相关
+
+    Args:
+        text (str): 要分析的文本
+
+    Returns:
+        bool: 是否与神经科学相关
+    """
+    if not text:
+        return False
+
+    # 神经科学关键词
+    neuroscience_keywords = [
+        "neuroscience", "neural", "brain", "neuron", "cortex",
+        "cognition", "cognitive", "neuroimaging", "connectome",
+        "neuroinformatics", "computational neuroscience", "synaptic",
+        "dendrite", "axon", "hippocampus", "amygdala", "prefrontal",
+        "cerebellum", "thalamus", "neurotransmitter", "dopamine",
+        "serotonin", "glutamate", "gaba", "action potential",
+        "spike", "firing rate", "local field potential", "eeg", "meg",
+        "fmri", "bold", "dti", "diffusion tensor", "connectomics",
+        "neural network", "deep learning", "machine learning",
+        "artificial intelligence", "brain-computer interface",
+        "optogenetics", "calcium imaging", "patch clamp",
+        "whole-cell recording", "extracellular recording"
+    ]
+
+    # 将文本转为小写并检查关键词是否出现
+    text_lower = text.lower()
+
+    # 计算包含神经科学关键词的数量
+    keyword_count = sum(1 for keyword in neuroscience_keywords if keyword in text_lower)
+
+    # 如果包含超过2个神经科学关键词，认为与神经科学相关
+    return keyword_count >= 2
 
 
-def extract_keywords(text, n=10):
-    return nlp.extract_keywords(text, n)
+def extract_keywords(text, top_n=10):
+    """
+    从文本中提取关键词
 
+    Args:
+        text (str): 要分析的文本
+        top_n (int): 返回的关键词数量
 
-def extract_github_links(text):
-    return nlp.extract_github_links(text)
+    Returns:
+        list: 关键词列表
+    """
+    if not text:
+        return []
+
+    # 转为小写
+    text = text.lower()
+
+    # 标点符号和停用词
+    punctuation = string.punctuation
+    stop_words = set(stopwords.words('english'))
+
+    # 分词
+    words = word_tokenize(text)
+
+    # 过滤掉标点符号和停用词
+    filtered_words = [
+        word for word in words
+        if word not in punctuation
+           and word not in stop_words
+           and len(word) > 2  # 过滤短词
+    ]
+
+    # 统计词频
+    word_counts = Counter(filtered_words)
+
+    # 返回出现频率最高的top_n个词
+    return [word for word, count in word_counts.most_common(top_n)]
 
 
 def extract_dataset_links(text):
-    return nlp.extract_dataset_links(text)
+    """
+    从文本中提取可能的数据集链接或引用
+
+    Args:
+        text (str): 要分析的文本
+
+    Returns:
+        list: 可能的数据集链接或引用
+    """
+    if not text:
+        return []
+
+    dataset_references = []
+
+    # 1. 查找URL
+    url_pattern = r'https?://[^\s<>"\']+[^\s<>"\',\.]'
+    urls = re.findall(url_pattern, text)
+
+    # 过滤可能的数据集链接
+    data_repo_keywords = [
+        'figshare', 'zenodo', 'dryad', 'osf.io', 'github', 'ncbi', 'ebi',
+        'geo', 'genbank', 'sra', 'dataset', 'data.', 'neurodata', 'neurovault',
+        'openneuro', 'brainmaps', 'brain-map', 'humanconnectome', 'ukbiobank'
+    ]
+
+    for url in urls:
+        if any(keyword in url.lower() for keyword in data_repo_keywords):
+            dataset_references.append({'type': 'url', 'value': url})
+
+    # 2. 查找DOI
+    doi_pattern = r'doi:([^\s]+)|https?://doi\.org/([^\s]+)'
+    doi_matches = re.findall(doi_pattern, text)
+
+    for match in doi_matches:
+        doi = match[0] if match[0] else match[1]
+        if doi:
+            dataset_references.append({'type': 'doi', 'value': doi})
+
+    # 3. 查找Accession numbers
+    accession_patterns = [
+        r'accession\s+(?:code|number)[:\s]+([a-zA-Z0-9]+)',
+        r'accession[:\s]+([a-zA-Z0-9]+)',
+        r'(?:GEO|SRA|ENA|DDBJ|ArrayExpress|BioSample|BioProject)\s+accession[:\s]+([a-zA-Z0-9]+)',
+        r'(?:GSE|GSM|SRP|SRR|ERP|ERR|DRP|DRR|PRJNA|SAMN)[0-9]{5,}',
+        r'(?:E-[A-Z]{3,4}-[0-9]+)'
+    ]
+
+    for pattern in accession_patterns:
+        accession_matches = re.findall(pattern, text)
+        for match in accession_matches:
+            if match:
+                dataset_references.append({'type': 'accession', 'value': match})
+
+    # 4. 查找包含"data available at"或类似表述的句子
+    sentences = sent_tokenize(text)
+    data_phrases = [
+        'data available at', 'data are available at',
+        'dataset is available', 'data can be accessed',
+        'data can be found', 'data is deposited',
+        'data are deposited', 'code is available'
+    ]
+
+    for sentence in sentences:
+        if any(phrase in sentence.lower() for phrase in data_phrases):
+            dataset_references.append({'type': 'sentence', 'value': sentence.strip()})
+
+    return dataset_references
