@@ -9,3 +9,8 @@
 /.idea
 /.idea
 /.idea
+/parsers/__pycache__
+/debug_html
+*.db
+*.backup
+*.html
