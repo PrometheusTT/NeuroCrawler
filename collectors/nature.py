@@ -5,11 +5,10 @@ import logging
 import re
 from datetime import datetime
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-
+from urllib.parse import urlencode, urljoin
 from collectors.base_collector import BaseCollector
 from utils.selectors import NATURE_SELECTORS
-
+import os
 logger = logging.getLogger(__name__)
 
 
@@ -81,18 +80,6 @@ class NatureCollector(BaseCollector):
         # 获取配置的期刊列表
         journals_config = self.config.get('journals', list(self.journals.keys()))
 
-        # 如果journals_config是字典，转换为列表
-        if isinstance(journals_config, dict):
-            enabled_journals = []
-            for journal_id, journal_config in journals_config.items():
-                if journal_config.get('enabled', True):
-                    enabled_journals.append(journal_id)
-            journals_config = enabled_journals
-
-        # 确保journals_config是列表
-        if not isinstance(journals_config, list):
-            journals_config = list(self.journals.keys())
-
         # 遍历期刊列表
         for journal_id in journals_config:
             if journal_id not in self.journals:
@@ -103,12 +90,17 @@ class NatureCollector(BaseCollector):
             logger.info(f"正在搜索期刊: {journal_info['name']}")
 
             try:
-                # 搜索文章
+                # 尝试搜索文章
                 articles = self._search_journal_articles(
                     journal_id,
                     start_date,
                     end_date
                 )
+
+                # 如果没有找到文章，尝试直接获取
+                if not articles and journal_id != 'nature':  # 主刊通常可以正常搜索
+                    logger.info(f"搜索没有找到文章，尝试直接从{journal_info['name']}获取最新文章")
+                    articles = self._get_latest_articles_direct(journal_id)
 
                 logger.info(f"从 {journal_info['name']} 搜索到 {len(articles)} 篇文章")
                 all_articles.extend(articles)
@@ -130,327 +122,160 @@ class NatureCollector(BaseCollector):
             return []
 
         try:
-            # 构建查询参数
+            # 改用更可靠的方式构建URL
+            from urllib.parse import urlencode  # 使用正确的模块
+
+            # 构建查询参数 - 确保所有值都是字符串类型
             params = {
-                'journal': journal_id,
+                'journal': str(journal_id),
                 'date_range': f'{self._format_date(start_date)} TO {self._format_date(end_date)}',
                 'order': 'date_desc',
-                'page': page,
-                'page_size': page_size,
+                'page': str(page),
+                'page_size': str(page_size),
                 'nature_research': 'yes'
             }
 
-            # 使用OR连接神经科学关键词 - 这行必须添加
+            # 使用OR连接神经科学关键词
             neuro_search_terms = " OR ".join([f'"{keyword}"' for keyword in self.neuroscience_keywords])
             params['q'] = f'({neuro_search_terms})'
 
-            # 构建完整的搜索URL
-            # 为了防止URL编码问题，使用urllib.parse的urlencode函数
-            from urllib.parse import urlencode
-            search_url = f"{journal_info['advanced_search_url']}?{urlencode(params)}"
+            # 直接使用urllib.parse的urlencode方法构建URL
+            query_string = urlencode(params)  # 使用正确的函数
+            search_url = f"{journal_info['advanced_search_url']}?{query_string}"
 
-            logger.info(f"搜索URL: {search_url}")
+            logger.info(f"完整搜索URL: {search_url}")
+
+            # 避免URL截断问题的验证
+            if len(search_url) > 200:
+                logger.info(f"URL长度: {len(search_url)}，前200字符: {search_url[:200]}...")
 
             # 使用浏览器模拟器获取页面
             html_content = self.browser.get_page(
                 search_url,
                 use_selenium=self.config.get('browser_emulation', True),
-                wait_time=15
+                wait_time=20  # 增加等待时间
             )
 
             if not html_content:
                 logger.error(f"获取搜索页面失败: {search_url}")
                 return []
 
-            # 缓存HTML，便于调试
+            # 验证获取到的页面长度
+            logger.info(f"获取到HTML长度: {len(html_content)}")
+
+            # 保存HTML，便于调试
             self.save_html_cache(search_url, html_content)
 
             # 解析搜索结果
-            return self._parse_search_results(html_content, journal_info)
+            return self._parse_search_results(html_content, journal_info, params)
 
         except Exception as e:
             logger.error(f"搜索期刊文章时出错: {e}")
+            import traceback
+            logger.error(traceback.format_exc())  # 添加完整堆栈跟踪
             return []
 
-    def _parse_search_results(self, html_content, journal_info):
+    def _parse_search_results(self, html_content, journal_info, params=None):
         """解析搜索结果页面"""
         articles = []
 
         try:
-            # 保存HTML用于检查实际结构
-            import os
-            from datetime import datetime
-            debug_dir = "debug_html"
-            os.makedirs(debug_dir, exist_ok=True)
-            debug_file = os.path.join(debug_dir,
-                                      f"{journal_info['name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
-            with open(debug_file, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            logger.info(f"已保存HTML用于调试: {debug_file}")
+            # 现有的保存HTML代码...
 
             soup = BeautifulSoup(html_content, 'html.parser')
 
-            # 检查是否显示"无结果"消息
-            no_results_indicators = [
-                'No results found',
-                'Sorry, there are no results',
-                '没有找到结果',
+            # 增加HTML分析功能，帮助理解页面结构
+            page_info = {
+                'title': soup.title.text if soup.title else 'No title',
+                'meta_description': None
+            }
+
+            # 检查meta描述
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc:
+                page_info['meta_description'] = meta_desc.get('content')
+
+            logger.info(f"页面标题: {page_info['title']}")
+
+            # 检查页面是否包含无结果信息
+            page_text = soup.get_text().lower()
+            no_results_phrases = [
+                'no results found',
+                'sorry, there are no results',
+                'your search did not match',
                 '0 results found',
-                'Your search did not match any articles'
+                'we couldn\'t find'
             ]
 
-            page_text = soup.get_text().lower()
-            for indicator in no_results_indicators:
-                if indicator.lower() in page_text:
-                    logger.warning(f"搜索返回无结果: '{indicator}' 在页面中找到")
+            for phrase in no_results_phrases:
+                if phrase in page_text:
+                    logger.warning(f"检测到无结果提示: '{phrase}'")
+                    # 找到显示这个提示的元素
+                    elements = soup.find_all(string=lambda text: phrase in text.lower() if text else False)
+                    if elements:
+                        parent = elements[0].parent
+                        logger.info(f"无结果提示元素: {parent.name} - {parent.get('class', 'no-class')}")
                     return []
 
-            # 尝试所有可能的文章项选择器
-            article_elements = []
-            used_selector = None
-
-            # 可能的文章元素选择器
-            article_selectors = [
-                'li.app-article-list-row',
-                'li.c-list-group__item',
-                'article.u-full-width',
-                'div.c-card.c-card--flush',
-                'div.u-flex-justify-between',
-                'li.has-journal-link',
-                'article[data-track-action="view article"]',
-                'ul.c-list-group > li',  # 通用列表项
-                'div.app-article-list-row',  # 另一个可能的容器
-                'div[data-component="article-list"] > div',  # 更通用的选择器
-                '.c-card',  # 简单的卡片类
-                '.article-item'  # 通用文章项类
+            # 检查所有可能包含文章列表的容器
+            potential_containers = [
+                'main', '#content', '.content-wrapper', '.content-container',
+                '.c-list-group', '.app-article-list', '.search-results',
+                'div[data-component="search-results"]', 'div[data-test="search-results"]'
             ]
 
-            for selector in article_selectors:
+            container_info = []
+            for selector in potential_containers:
                 elements = soup.select(selector)
-                if elements:
-                    article_elements = elements
-                    used_selector = selector
-                    logger.info(f"使用选择器 '{selector}' 找到 {len(elements)} 个文章元素")
-                    break
+                for i, element in enumerate(elements):
+                    class_attr = element.get('class', [])
+                    class_str = ' '.join(class_attr) if class_attr else 'no-class'
+                    id_attr = element.get('id', 'no-id')
 
-            # 如果找不到文章，尝试更通用的方法
-            if not article_elements:
-                logger.warning("无法使用预定义选择器找到文章，尝试替代方法")
+                    # 检查该容器内是否有潜在的文章元素
+                    potential_articles = element.select('article, .c-card, li, div > a[href*="/articles/"]')
 
-                # 尝试查找包含特定模式的链接
+                    container_info.append({
+                        'selector': selector,
+                        'index': i,
+                        'id': id_attr,
+                        'class': class_str,
+                        'potential_articles': len(potential_articles)
+                    })
+
+            if container_info:
+                logger.info(f"找到 {len(container_info)} 个潜在内容容器:")
+                for info in container_info:
+                    if info['potential_articles'] > 0:
+                        logger.info(
+                            f"  - {info['selector']} #{info['index']}: ID={info['id']}, Class={info['class']}, 包含 {info['potential_articles']} 个潜在文章")
+
+                        # 尝试从这个容器解析文章
+                        container = soup.select(info['selector'])[info['index']]
+
+                        # 这里增加特定于容器的文章提取逻辑
+                        articles.extend(self._extract_articles_from_container(container, journal_info))
+
+            # 如果通过容器没有找到文章，尝试直接搜索文章链接
+            if not articles:
+                logger.info("尝试直接搜索文章链接")
                 all_links = soup.find_all('a')
                 article_links = []
 
                 for link in all_links:
                     href = link.get('href', '')
-                    # 检查链接是否指向文章
-                    article_patterns = ['/articles/', '/article/', '/s', 'doi.org']
-                    if any(pattern in href for pattern in article_patterns):
-                        parent = link.parent
-                        # 如果链接位于标题中或是主要内容链接，可能是文章链接
-                        if parent and parent.name in ['h1', 'h2', 'h3', 'h4', 'h5'] or 'c-card__link' in link.get(
-                                'class', []):
-                            article_links.append(link)
-
-                if article_links:
-                    logger.info(f"通过链接模式找到 {len(article_links)} 个可能的文章")
-
-                    # 从链接创建文章
-                    for link in article_links:
-                        # 尝试提取标题
+                    if '/articles/' in href or '/article/' in href:
                         title = link.text.strip()
-
-                        # 如果链接本身没有文本，查找相关元素
-                        if not title:
-                            # 检查父元素是否是标题
-                            parent = link.parent
-                            if parent and parent.name in ['h1', 'h2', 'h3', 'h4', 'h5']:
-                                title = parent.text.strip()
-                            else:
-                                # 查找链接内部或相邻的标题元素
-                                title_el = link.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-                                if not title_el:
-                                    title_el = link.find_next(['h1', 'h2', 'h3', 'h4', 'h5'])
-                                if title_el:
-                                    title = title_el.text.strip()
-
-                        # 如果仍然没有找到标题，跳过
-                        if not title:
-                            continue
-
-                        article_url = urljoin(journal_info['base_url'], link['href'])
-
-                        # 创建文章对象
-                        article = {
-                            'title': title,
-                            'url': article_url,
-                            'journal': journal_info['name'],
-                            'source': 'nature'
-                        }
-
-                        # 尝试提取发布日期
-                        date_el = None
-                        # 查找附近的时间元素
-                        date_el = link.find_next('time')
-                        if not date_el:
-                            # 向上搜索共同的父元素，然后查找time元素
-                            parent = link.parent
-                            while parent and parent.name != 'body':
-                                date_el = parent.find('time')
-                                if date_el:
-                                    break
-                                parent = parent.parent
-
-                        if date_el:
-                            pub_date = None
-                            if date_el.get('datetime'):
-                                try:
-                                    pub_date = datetime.strptime(date_el['datetime'], "%Y-%m-%d")
-                                    article['published_date'] = pub_date.strftime("%Y-%m-%d")
-                                except ValueError:
-                                    pass
-                            if not pub_date and date_el.text.strip():
-                                try:
-                                    # 尝试解析各种日期格式
-                                    date_text = date_el.text.strip()
-                                    for fmt in ["%d %b %Y", "%B %d, %Y", "%Y-%m-%d"]:
-                                        try:
-                                            pub_date = datetime.strptime(date_text, fmt)
-                                            article['published_date'] = pub_date.strftime("%Y-%m-%d")
-                                            break
-                                        except ValueError:
-                                            continue
-                                except:
-                                    pass
-
-                        # 尝试提取作者
-                        authors = []
-                        # 查找常见的作者容器模式
-                        author_containers = link.find_all(['span', 'div'], class_=lambda c: c and (
-                                    'author' in c.lower() or 'c-author-list' in c))
-                        for container in author_containers:
-                            author_elements = container.find_all('li')
-                            if author_elements:
-                                authors = [author.text.strip() for author in author_elements]
-                                break
-
-                        if authors:
-                            article['authors'] = authors
-
-                        articles.append(article)
-
-                # 如果替代方法也没找到文章，返回空列表
-                return articles
-
-            # 处理找到的文章元素
-            for article_el in article_elements:
-                try:
-                    # 尝试多个可能的标题选择器
-                    title_el = None
-                    title_text = None
-
-                    title_selectors = [
-                        'h3.c-card__title a',
-                        'a.c-card__link',
-                        'h2 a',
-                        'h3 a',
-                        'a[data-track-action="view article"]',
-                        'a.u-link-inherit',
-                        '.c-card__title a',
-                        'h1 a', 'h2 a', 'h3 a', 'h4 a',
-                        'a'  # 最后尝试任何链接
-                    ]
-
-                    for title_selector in title_selectors:
-                        title_els = article_el.select(title_selector)
-                        for el in title_els:
-                            if el.text.strip():  # 确保有文本内容
-                                title_el = el
-                                title_text = el.text.strip()
-                                break
-                        if title_text:
-                            break
-
-                    # 如果没有找到标题，查找任何可能的标题
-                    if not title_text:
-                        heading_tags = article_el.find_all(['h1', 'h2', 'h3', 'h4', 'h5'])
-                        for heading in heading_tags:
-                            if heading.text.strip():
-                                title_text = heading.text.strip()
-                                # 查找标题中的链接
-                                title_el = heading.find('a')
-                                break
-
-                    # 如果仍然没有找到标题，尝试查找卡片标题或任何有意义的文本
-                    if not title_text:
-                        card_titles = article_el.select('.c-card__title, .article-title, .title')
-                        for card_title in card_titles:
-                            title_text = card_title.text.strip()
-                            if title_text:
-                                break
-
-                    # 如果没有找到任何标题，跳过这个文章
-                    if not title_text:
-                        continue
-
-                    # 获取文章URL
-                    article_url = None
-                    if title_el and 'href' in title_el.attrs:
-                        article_url = urljoin(journal_info['base_url'], title_el['href'])
-                    else:
-                        # 尝试在整个文章元素中找链接
-                        link_els = article_el.find_all('a')
-                        for link_el in link_els:
-                            if 'href' in link_el.attrs:
-                                href = link_el['href']
-                                # 检查是否是文章链接
-                                if '/article/' in href or '/articles/' in href or 'doi.org' in href:
-                                    article_url = urljoin(journal_info['base_url'], href)
-                                    break
-
-                    if not article_url:
-                        continue
-
-                    # 创建文章对象
-                    article = {
-                        'title': title_text,
-                        'url': article_url,
-                        'journal': journal_info['name'],
-                        'source': 'nature'
-                    }
-
-                    # 提取发布日期
-                    date_el = article_el.select_one('time')
-                    if date_el:
-                        pub_date = None
-                        if date_el.get('datetime'):
-                            try:
-                                pub_date = datetime.strptime(date_el['datetime'], "%Y-%m-%d")
-                                article['published_date'] = pub_date.strftime("%Y-%m-%d")
-                            except ValueError:
-                                try:
-                                    date_text = date_el.text.strip()
-                                    for fmt in ["%d %b %Y", "%B %d, %Y", "%Y-%m-%d"]:
-                                        try:
-                                            pub_date = datetime.strptime(date_text, fmt)
-                                            article['published_date'] = pub_date.strftime("%Y-%m-%d")
-                                            break
-                                        except ValueError:
-                                            continue
-                                except:
-                                    pass
-
-                    # 提取作者
-                    authors_els = article_el.select('ul.c-author-list li, .c-author-list__item, .authors span')
-                    if authors_els:
-                        article['authors'] = [author.text.strip() for author in authors_els]
-
-                    articles.append(article)
-
-                except Exception as e:
-                    logger.error(f"解析文章元素时出错: {e}")
-                    import traceback
-                    logger.debug(f"详细错误: {traceback.format_exc()}")
+                        if title:
+                            article_url = urljoin(journal_info['base_url'], href)
+                            article = {
+                                'title': title,
+                                'url': article_url,
+                                'journal': journal_info['name'],
+                                'source': 'nature'
+                            }
+                            articles.append(article)
+                            logger.info(f"直接找到文章: {title}")
 
             logger.info(f"从 {journal_info['name']} 搜索到 {len(articles)} 篇文章")
             return articles
@@ -458,9 +283,197 @@ class NatureCollector(BaseCollector):
         except Exception as e:
             logger.error(f"解析搜索结果页面时出错: {e}")
             import traceback
-            logger.debug(f"详细错误: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             return []
 
+    def _extract_articles_from_container(self, container, journal_info):
+        """从找到的容器中提取文章"""
+        articles = []
+
+        # 1. 尝试找符合Nature结构的文章
+        article_elements = container.select('.c-card, article, li.app-article-list-row')
+
+        # 2. 如果没找到，尝试所有a标签
+        if not article_elements:
+            article_elements = container.select('a[href*="/articles/"], a[href*="/article/"]')
+
+        # 3. 处理找到的元素
+        for element in article_elements:
+            try:
+                # 如果是链接元素
+                if element.name == 'a':
+                    title = element.text.strip()
+                    url = urljoin(journal_info['base_url'], element['href'])
+
+                    if not title:
+                        # 查找元素内的标题
+                        title_el = element.select_one('h1, h2, h3, h4, h5, .title')
+                        if title_el:
+                            title = title_el.text.strip()
+
+                    if title:
+                        articles.append({
+                            'title': title,
+                            'url': url,
+                            'journal': journal_info['name'],
+                            'source': 'nature'
+                        })
+                else:
+                    # 如果是卡片或文章元素
+                    title_el = element.select_one('h1, h2, h3, h4, h5, .title, a')
+                    if not title_el:
+                        continue
+
+                    title = title_el.text.strip()
+
+                    # 找URL
+                    url = None
+                    if title_el.name == 'a' and 'href' in title_el.attrs:
+                        url = urljoin(journal_info['base_url'], title_el['href'])
+                    else:
+                        link_el = element.select_one('a[href*="/articles/"], a[href*="/article/"]')
+                        if link_el:
+                            url = urljoin(journal_info['base_url'], link_el['href'])
+
+                    if not url:
+                        continue
+
+                    articles.append({
+                        'title': title,
+                        'url': url,
+                        'journal': journal_info['name'],
+                        'source': 'nature'
+                    })
+
+            except Exception as e:
+                logger.error(f"提取文章元素时出错: {e}")
+
+        return articles
+
+    def _get_latest_articles_direct(self, journal_id):
+        """直接从期刊页面获取最新文章 - 备选方案"""
+        journal_info = self.journals.get(journal_id)
+        if not journal_info:
+            logger.error(f"未知的期刊ID: {journal_id}")
+            return []
+
+        try:
+            # 直接访问期刊主页而不是搜索页面
+            journal_url = journal_info['base_url']
+            logger.info(f"尝试直接从期刊主页获取文章: {journal_url}")
+
+            html_content = self.browser.get_page(
+                journal_url,
+                use_selenium=True,
+                wait_time=20
+            )
+
+            if not html_content:
+                logger.error(f"获取期刊主页失败: {journal_url}")
+                return []
+
+            # 保存期刊主页HTML以供分析
+            debug_dir = "debug_html"
+            os.makedirs(debug_dir, exist_ok=True)
+            direct_file = os.path.join(debug_dir,
+                                       f"{journal_info['name'].replace(' ', '_')}_direct_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+            with open(direct_file, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            logger.info(f"已保存期刊主页HTML: {direct_file}")
+
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # 查找最新文章部分
+            latest_sections = [
+                'section.c-latest-content',  # 常见的最新内容区域
+                'div.c-latest-content',
+                'section.latest-articles',
+                'div.latest-articles',
+                'section[data-track-action="view latest articles"]',
+                'div.c-card-collection',  # 文章集合
+                'ul.app-article-list'  # 文章列表
+            ]
+
+            articles = []
+
+            # 尝试各种可能的最新文章区域
+            for section_selector in latest_sections:
+                sections = soup.select(section_selector)
+
+                if sections:
+                    logger.info(f"找到最新文章区域: {section_selector}, 数量: {len(sections)}")
+
+                    for section in sections:
+                        # 查找区域内的所有文章链接
+                        links = section.select('a[href*="/articles/"], a[href*="/article/"]')
+
+                        for link in links:
+                            href = link.get('href', '')
+                            # 跳过补充材料链接
+                            if 'supplementary' in href.lower():
+                                continue
+
+                            title = link.text.strip()
+                            if not title:
+                                # 尝试查找链接元素内或附近的标题
+                                title_el = link.select_one('h1, h2, h3, h4, h5, .title')
+                                if title_el:
+                                    title = title_el.text.strip()
+                                else:
+                                    # 往上查找父元素中的标题
+                                    parent = link.parent
+                                    while parent and parent.name != 'body':
+                                        title_el = parent.select_one('h1, h2, h3, h4, h5, .title')
+                                        if title_el:
+                                            title = title_el.text.strip()
+                                            break
+                                        parent = parent.parent
+
+                            if title:
+                                article_url = urljoin(journal_url, href)
+                                article = {
+                                    'title': title,
+                                    'url': article_url,
+                                    'journal': journal_info['name'],
+                                    'source': 'nature',
+                                    'found_via': 'direct'
+                                }
+                                articles.append(article)
+
+            # 如果没有找到特定区域，尝试找所有可能的文章链接
+            if not articles:
+                logger.info("尝试查找所有可能的文章链接")
+                all_links = soup.select('a[href*="/articles/"], a[href*="/article/"]')
+
+                for link in all_links:
+                    href = link.get('href', '')
+                    if 'supplementary' in href.lower():
+                        continue
+
+                    # 检查是否是真正的文章链接
+                    if re.search(r'/articles?/[^/]+/?$', href):
+                        title = link.text.strip()
+                        # 如上面的逻辑尝试提取标题
+
+                        if title:
+                            article_url = urljoin(journal_url, href)
+                            article = {
+                                'title': title,
+                                'url': article_url,
+                                'journal': journal_info['name'],
+                                'source': 'nature',
+                                'found_via': 'direct_all'
+                            }
+                            articles.append(article)
+
+            logger.info(f"直接从{journal_info['name']}页面找到 {len(articles)} 篇文章")
+            return articles
+
+        except Exception as e:
+            logger.error(f"直接从期刊获取文章失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
     def get_article_details(self, article):
         """获取文章详细信息"""
         if not article or 'url' not in article:
