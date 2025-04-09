@@ -23,36 +23,56 @@ class BaseCollector(ABC):
         self.proxy_manager = ProxyManager(config.get('proxy', {}))
         self.browser = BrowserEmulator()
         self.dataset_extractor = DatasetExtractor()
-        self.auto_download = config.get('auto_download', False)
-        self.download_config = config.get('dataset_download', {})
-        if self.auto_download:
-            self.downloader = DatasetDownloader(self.download_config)
+
         # 判断是否是首次运行
         self.is_first_run = True
 
-    def _get_time_range(self, days=None):
+    def _get_time_range(self, start_date=None, end_date=None, days=None):
         """
         获取时间范围
 
         Args:
+            start_date (datetime, optional): 明确指定的开始日期
+            end_date (datetime, optional): 明确指定的结束日期
             days (int, optional): 向前搜索的天数，默认使用配置中的值
 
         Returns:
             tuple: (start_date, end_date)
         """
-        end_date = datetime.now()
+        # 如果未指定结束日期，使用当前日期
+        if end_date is None:
+            end_date = datetime.now()
+        elif isinstance(end_date, str):
+            # 如果结束日期是字符串格式，尝试解析
+            try:
+                end_date = datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                logger.error(f"无效的结束日期格式: {end_date}，使用当前日期")
+                end_date = datetime.now()
 
-        if days is None:
-            # 使用配置中的天数或默认值
-            days = self.config.get('days_to_crawl', 30)
+        # 如果明确指定了开始日期，使用它
+        if start_date is not None:
+            if isinstance(start_date, str):
+                try:
+                    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+                except ValueError:
+                    logger.error(f"无效的开始日期格式: {start_date}，将使用基于天数的计算")
+                    start_date = None
 
-        # 第一次运行爬取过去指定天数的数据，后续只爬取当天的数据
-        if self.is_first_run:
-            start_date = end_date - timedelta(days=days)
-            self.is_first_run = False
-        else:
-            start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 如果没有明确指定开始日期，基于天数计算
+        if start_date is None:
+            if days is None:
+                # 使用配置中的天数或默认值
+                days = self.config.get('days_to_crawl', 5)
 
+            # 第一次运行爬取过去指定天数的数据，后续只爬取当天的数据
+            if self.is_first_run:
+                start_date = end_date - timedelta(days=days)
+                self.is_first_run = False
+            else:
+                start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        logger.debug(f"确定的时间范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
         return start_date, end_date
 
     def _format_date(self, date, format_str="%Y-%m-%d"):
@@ -154,18 +174,20 @@ class BaseCollector(ABC):
 
         return datasets
 
-    def collect_papers(self, days=None):
+    def collect_papers(self, start_date=None, end_date=None, days=None):
         """
         收集符合条件的论文
 
         Args:
+            start_date (datetime/str, optional): 开始日期
+            end_date (datetime/str, optional): 结束日期
             days (int, optional): 向前搜索的天数
 
         Returns:
             list: 收集到的论文列表
         """
         # 获取时间范围
-        start_date, end_date = self._get_time_range(days)
+        start_date, end_date = self._get_time_range(start_date, end_date, days)
         source_name = self.__class__.__name__.replace('Collector', '')
 
         logger.info(

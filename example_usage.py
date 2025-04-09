@@ -26,7 +26,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='神经科学数据爬取系统示例')
     parser.add_argument('--config', type=str, default='config.yaml', help='配置文件路径')
     parser.add_argument('--source', type=str, help='只爬取指定来源 (nature, science, cell)')
-    parser.add_argument('--days', type=int, default=30, help='爬取过去的天数（覆盖第一次运行的默认值）')
+    parser.add_argument('--days', type=int, default=10, help='爬取过去的天数（覆盖第一次运行的默认值）')
     parser.add_argument('--debug', action='store_true', help='启用调试模式，保存HTML页面')
     return parser.parse_args()
 
