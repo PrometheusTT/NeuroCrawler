@@ -23,7 +23,10 @@ class BaseCollector(ABC):
         self.proxy_manager = ProxyManager(config.get('proxy', {}))
         self.browser = BrowserEmulator()
         self.dataset_extractor = DatasetExtractor()
-
+        self.auto_download = config.get('auto_download', False)
+        self.download_config = config.get('dataset_download', {})
+        if self.auto_download:
+            self.downloader = DatasetDownloader(self.download_config)
         # 判断是否是首次运行
         self.is_first_run = True
 
